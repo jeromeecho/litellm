@@ -55,7 +55,7 @@ RUN apk add --no-cache \
 
 ENV UV_PROJECT_ENVIRONMENT=/app/.venv \
     UV_PYTHON_INSTALL_DIR=/opt/python \
-    UV_PYTHON=3.13.15 \
+    UV_PYTHON=3.13.13 \
     UV_LINK_MODE=copy \
     UV_HTTP_CONNECT_TIMEOUT=60 \
     UV_HTTP_TIMEOUT=120 \
@@ -83,7 +83,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     --extra extra_proxy \
     --extra semantic-router \
     --extra saml \
-    --python 3.13.15
+    --python 3.13.13
 
 # Copy full source tree
 COPY . .
@@ -111,7 +111,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     --extra extra_proxy \
     --extra semantic-router \
     --extra saml \
-    --python 3.13.15
+    --python 3.13.13
 
 RUN printf '\n[tool.prisma]\nnodeenv_extra_args = ["--node=20.20.2"]\n' >> pyproject.toml && \
     HOME=/opt/prisma XDG_CACHE_HOME=/opt/prisma/.cache PRISMA_BINARY_CACHE_DIR=/opt/prisma/binaries \

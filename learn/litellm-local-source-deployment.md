@@ -647,7 +647,7 @@ RUN sed -i \
 
 现有 `uv.lock` 仍然作为版本选择的基础，`uv lock` 主要重新解析包来源和下载地址。构建最初使用 Python 3.14 时，锁文件中的 `uvloop 0.21.0` 没有对应 wheel，并且不支持 Python 3.14，因此曾临时升级到 `uvloop 0.22.1`
 
-最终构建固定为 Python 3.13.15，原锁文件中的 `uvloop 0.21.0` 已有对应 wheel 且受支持，因此不再单独升级 `uvloop`，减少与官方锁文件的版本偏差
+最终构建固定为 Python 3.13.13，原锁文件中的 `uvloop 0.21.0` 已有对应 wheel 且受支持，因此不再单独升级 `uvloop`，减少与官方锁文件的版本偏差
 
 第一次重新锁定发生在安装第三方依赖前。后续的 `COPY . .` 会把仓库原始 `pyproject.toml` 和 `uv.lock` 重新复制进镜像，所以第二次安装前也需要再次删除时间过滤配置并重新锁定
 
@@ -740,17 +740,17 @@ ImportError: /usr/lib/libm.so.6: version `GLIBC_2.44' not found
 
 因此不能使用 Wolfi 仓库中的 Python。最初使用 `uv` 管理的 Python 3.14.4 后，干净容器中仅执行 `from prisma import config` 仍超过 3 分钟，LiteLLM 主进程也会在启动早期持续占用 CPU。当前 Prisma Python 生成代码在 Python 3.14 下不适合作为本地运行基线
 
-最终固定使用仍受支持的 Python 3.13.15，并将安装目录设为会被复制进 runtime 的 `/opt/python`：
+固定的 uv 0.11.7 镜像内置下载清单不包含 Python 3.13.15。通过在实际 builder 基础镜像中运行 `uv python list 3.13 --all-versions`，确认其支持的最新 3.13 版本是 Python 3.13.13，因此最终固定使用 3.13.13，并将安装目录设为会被复制进 runtime 的 `/opt/python`：
 
 ```dockerfile
 ENV UV_PROJECT_ENVIRONMENT=/app/.venv \
     UV_PYTHON_INSTALL_DIR=/opt/python \
-    UV_PYTHON=3.13.15
+    UV_PYTHON=3.13.13
 
-RUN uv sync ... --python 3.13.15
+RUN uv sync ... --python 3.13.13
 ```
 
-`--python 3.13.15` 只约束对应的 `uv sync` 命令，不能约束前面的 `uv lock`。此前虽然两次 `uv sync` 都写了该参数，`uv lock` 仍然下载并使用 Python 3.14.4。`UV_PYTHON=3.13.15` 作用于整个 builder 阶段，使重新锁定和安装使用同一个解释器版本
+`--python 3.13.13` 只约束对应的 `uv sync` 命令，不能约束前面的 `uv lock`。此前虽然两次 `uv sync` 都指定了 Python 3.13，`uv lock` 仍然下载并使用 Python 3.14.4。`UV_PYTHON=3.13.13` 作用于整个 builder 阶段，使重新锁定和安装使用同一个解释器版本
 
 内部 PyPI 返回的下载地址会重定向到内部 Azure Blob 存储。一次构建曾在下载 `pytest` wheel 时因连接超时失败，这属于网络传输失败，不是包解析或 Python 兼容错误。Dockerfile 使用 uv 官方支持的超时和重试变量，并复用 BuildKit 下载缓存：
 
