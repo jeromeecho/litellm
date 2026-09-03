@@ -13,6 +13,7 @@
 - `registry.npmjs.org` 和 `files.pythonhosted.org` 无法访问时为什么会构建失败
 - 如何把内部 npm 和 PyPI 镜像传入 Docker 构建阶段
 - LiteLLM、PostgreSQL 和 Prometheus 分别运行在哪里
+- 构建和启动过程中出现过哪些问题，以及最终如何验证服务可用
 
 ## 2. LiteLLM 是什么
 
@@ -851,7 +852,7 @@ Dockerfile builder ARG
 删除 pyproject.toml 和 uv.lock 构建副本中的时间过滤配置
            |
            v
-uv lock --default-index "$UV_DEFAULT_INDEX" --upgrade-package uvloop
+uv lock --default-index "$UV_DEFAULT_INDEX"
            |
            v
 生成使用内部下载地址的临时 uv.lock
@@ -896,13 +897,20 @@ ARG NPM_CONFIG_REGISTRY=https://registry.npmjs.org/
 ```dockerfile
 FROM $LITELLM_BUILD_IMAGE AS builder
 
+ARG NPM_CONFIG_REGISTRY=https://registry.npmjs.org/
 ARG UV_DEFAULT_INDEX=https://pypi.org/simple
+
+ENV UV_PYTHON_INSTALL_DIR=/opt/python \
+    UV_PYTHON=3.13.13 \
+    UV_HTTP_CONNECT_TIMEOUT=60 \
+    UV_HTTP_TIMEOUT=120 \
+    UV_HTTP_RETRIES=5
 
 RUN sed -i \
     -e '/^exclude-newer = /d' \
     -e '/^exclude-newer-span = /d' \
     pyproject.toml uv.lock && \
-    uv lock --default-index "$UV_DEFAULT_INDEX" --upgrade-package uvloop && \
+    uv lock --default-index "$UV_DEFAULT_INDEX" && \
     uv sync --default-index "$UV_DEFAULT_INDEX" --frozen ...
 ```
 
@@ -1016,7 +1024,77 @@ GitHub Copilot Proxy :3000
 
 具体模型配置和协议路径应在两个服务都成功独立运行后再配置
 
-## 21. 当前结论
+## 21. 排错历史总结与最终验证
+
+### 21.1 最终运行结果
+
+最终执行：
+
+```powershell
+docker compose up -d --build
+```
+
+源码镜像完整构建成功，构建输出中的 `up 4/4` 包含一项镜像构建和三项容器操作，并不表示有四个容器。实际运行的是三个容器：
+
+| 容器 | 作用 | 最终状态 |
+|---|---|---|
+| `litellm-litellm-1` | LiteLLM Gateway 和 Admin UI | `Up (healthy)` |
+| `litellm_db` | PostgreSQL | `Up (healthy)` |
+| `litellm-prometheus-1` | Prometheus | `Up` |
+
+Compose 构建完成时，LiteLLM 显示 `Started`，表示这次启动操作已完成。它不是持续状态；容器完成初始化和健康检查后，`docker compose ps` 显示为 `Up (healthy)`
+
+最终验证结果：
+
+| 验证项 | 结果 |
+|---|---|
+| LiteLLM 健康端点 | 返回 `"I'm alive!"` |
+| PostgreSQL `public` schema | 已创建 86 张表 |
+| Admin UI | 可以打开并登录 |
+| LiteLLM 容器 | `Up (healthy)` |
+| PostgreSQL 容器 | `Up (healthy)` |
+
+这组结果说明镜像构建、Python 和 Node runtime、Prisma 数据库迁移、LiteLLM 服务启动及 Admin UI 登录链路均已成功
+
+### 21.2 故障链和最终处理
+
+排错过程中并不是同一个错误反复出现，而是前一个阶段修复后，构建继续向后执行并暴露下一个独立问题：
+
+| 阶段 | 现象 | 根因 | 最终处理 |
+|---|---|---|---|
+| Admin UI 依赖安装 | `npm ci` 无法下载 | 当前网络不能稳定访问公共 npm registry | 通过 Compose build args 向 `ui-builder` 传入内部 npm registry |
+| Python 依赖下载 | `files.pythonhosted.org` TLS 失败 | 公共 PyPI 文件域名不可访问 | 使用内部 PyPI index |
+| uv 冻结安装 | 仍访问公共文件 URL | `uv.lock` 保存了绝对下载地址 | 在 Docker 构建副本中重新执行 `uv lock` |
+| uv 重新锁定 | `has no publish time` | 内部 PyPI 缺少 `exclude-newer` 所需的上传时间 | 只在镜像构建副本中删除 `exclude-newer` 和 `exclude-newer-span` |
+| `UV_EXCLUDE_NEWER=false` | 参数解析立即失败 | uv 0.11.7 只接受日期、时间戳或持续时间 | 删除该环境变量，恢复构建副本中的精确 `sed` 处理 |
+| Python 3.14 构建 | `uvloop 0.21.0` 不兼容 | 锁定版本没有 Python 3.14 支持 | 改用 Python 3.13 |
+| Python 3.13.15 | `No interpreter found` | 固定的 uv 0.11.7 下载清单尚不包含该版本 | 实际查询 `uv python list` 后固定为可用的 3.13.13 |
+| 内部 PyPI 下载 | Azure Blob 连接超时 | 内部 index 的文件下载会重定向，网络存在短暂抖动 | 增加 uv 连接超时、读取超时和重试，并使用 BuildKit uv 缓存 |
+| Rust 扩展构建 | `GLIBC_2.44 not found` | 固定 Wolfi 基础镜像与滚动 apk 仓库中的 Rust/LLVM 不兼容 | 从固定 digest 的官方 Rust 1.94.1 镜像复制工具链 |
+| Python runtime | `prisma` 无法导入 | `.venv` 引用了 builder 中未复制的 uv 托管解释器 | 把 Python 安装到 `/opt/python`，并与 `.venv` 一起复制到 runtime |
+| Wolfi system Python | `libm.so.6` 要求 GLIBC 2.44 | 滚动仓库中的 Python 与基础镜像不兼容 | runtime 不安装 Wolfi Python，使用 uv 托管的 Python 3.13.13 |
+| Prisma CLI 安装 | 再次访问公共 npm | Docker ARG 不会自动跨 build stage 继承 | 在 Python builder 中重新声明并传入 npm registry |
+| Prisma Node runtime | `libstdc++.so.6` 缺失 | Prisma 自带 Node 需要 GCC runtime libraries | runtime 安装 `libatomic`、`libgcc` 和 `libstdc++` |
+| Wolfi Node | `GLIBC_2.44 not found` | 滚动仓库中的 Node 与基础镜像不兼容 | runtime 使用 Prisma nodeenv 中的 Node |
+| Prisma Node 版本 | `prisma migrate status` 长时间无输出 | nodeenv 默认下载的 Node 26 与 Prisma CLI 5.4.2 组合异常 | 通过 `[tool.prisma]` 固定 Node 20.20.2 |
+| Prisma 配置 | Pydantic 要求 `list[str]` | JSON 字符串环境变量没有转换为列表 | 在 Docker 构建副本的 `pyproject.toml` 中使用 TOML 数组 |
+| 数据库迁移 | UI 启动但数据库没有表 | 迁移失败后 LiteLLM 仍继续启动 | 设置 `ENFORCE_PRISMA_MIGRATION_CHECK=true`，迁移失败时直接退出 |
+
+### 21.3 这次排错得到的经验
+
+第一，必须区分构建阶段、容器启动阶段和应用运行阶段。`Image Built` 只表示镜像构建成功，`Container Started` 只表示启动动作完成，只有健康端点、数据库表和实际登录都成功，才能确认完整链路可用
+
+第二，多阶段 Dockerfile 中的 `ARG` 按阶段隔离。在 `ui-builder` 中设置 npm registry，不会自动影响后面的 Python builder 和 Prisma npm 子进程
+
+第三，固定基础镜像并不代表其软件仓库也固定。固定的 Wolfi digest 配合滚动 apk 仓库，可能安装要求更新 glibc 的 Python、Node、Rust 或 LLVM。关键工具链应固定版本和来源，而不是依赖构建当天的滚动仓库状态
+
+第四，不能根据当前最新 Python 版本推断旧版 uv 的内置下载清单。Python 3.13.13 是通过固定 uv 镜像实际查询和安装验证后确定的
+
+第五，静态配置检查、单个组件验证和完整 Build 是不同级别的证据。后续应明确说明完成了哪一种验证，不能把 Dockerfile 解析成功描述成镜像已经可用
+
+第六，当前在 Docker 内重新锁定并删除时间过滤配置，是适配内部 PyPI 镜像的本地 workaround。它能解决当前环境问题，但降低了原始锁文件的可复现性和 `exclude-newer` 供应链保护，不应直接当作通用上游方案
+
+## 22. 当前结论
 
 README 中：
 
@@ -1033,6 +1111,6 @@ litellm --model gpt-4o
 docker compose up -d --build
 ```
 
-是根据当前 Git 仓库源码构建完整 LiteLLM Gateway、PostgreSQL 和 Prometheus 的方式
+是根据当前 Git 仓库源码构建完整 LiteLLM Gateway、PostgreSQL 和 Prometheus 的方式。本次已经完成完整构建，并验证了容器健康状态、数据库迁移、健康端点和 Admin UI 登录
 
 两者都能启动 LiteLLM Gateway，但代码来源、运行组件和用途不同。当前目标是学习及修改源码，因此应继续使用 Fork 后的本地 Compose 方式
