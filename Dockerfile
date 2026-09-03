@@ -57,7 +57,6 @@ ENV UV_PROJECT_ENVIRONMENT=/app/.venv \
     UV_PYTHON_INSTALL_DIR=/opt/python \
     UV_PYTHON=3.13.15 \
     UV_LINK_MODE=copy \
-    UV_EXCLUDE_NEWER=false \
     UV_HTTP_CONNECT_TIMEOUT=60 \
     UV_HTTP_TIMEOUT=120 \
     UV_HTTP_RETRIES=5 \
@@ -72,6 +71,10 @@ COPY litellm-proxy-extras/pyproject.toml litellm-proxy-extras/
 
 # Install third-party dependencies (cached unless pyproject.toml/uv.lock change)
 RUN --mount=type=cache,target=/root/.cache/uv \
+    sed -i \
+    -e '/^exclude-newer = /d' \
+    -e '/^exclude-newer-span = /d' \
+    pyproject.toml uv.lock && \
     uv lock --default-index "$UV_DEFAULT_INDEX" && \
     uv sync --default-index "$UV_DEFAULT_INDEX" \
     --frozen --no-install-project --no-install-workspace --no-default-groups --no-editable \
@@ -96,6 +99,10 @@ RUN sed -i 's/\r$//' docker/build_admin_ui.sh && chmod +x docker/build_admin_ui.
 
 # Install project and workspace packages (fast - deps already cached)
 RUN --mount=type=cache,target=/root/.cache/uv \
+    sed -i \
+    -e '/^exclude-newer = /d' \
+    -e '/^exclude-newer-span = /d' \
+    pyproject.toml uv.lock && \
     uv lock --default-index "$UV_DEFAULT_INDEX" && \
     uv sync --default-index "$UV_DEFAULT_INDEX" \
     --frozen --no-default-groups --no-editable \

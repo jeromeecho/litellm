@@ -628,12 +628,20 @@ exclude-newer = "2026-08-26T18:33:25.773031Z"
 exclude-newer-span = "P3D"
 ```
 
-uv 官方支持使用 `UV_EXCLUDE_NEWER=false` 临时覆盖项目和锁文件中的时间过滤配置，因此不需要手工修改 `pyproject.toml` 或 `uv.lock`：
+uv 0.11.7 的 `UV_EXCLUDE_NEWER` 只接受日期、时间戳或持续时间，不能使用 `false` 关闭。构建曾因设置 `UV_EXCLUDE_NEWER=false` 直接失败：
+
+```text
+invalid value 'false' for '--exclude-newer'
+```
+
+因此，重新锁定前需要从 Docker 构建环境中的 `pyproject.toml` 和 `uv.lock` 副本同时移除时间过滤配置：
 
 ```dockerfile
-ENV UV_EXCLUDE_NEWER=false
-
-RUN uv lock --default-index "$UV_DEFAULT_INDEX" && \
+RUN sed -i \
+    -e '/^exclude-newer = /d' \
+    -e '/^exclude-newer-span = /d' \
+    pyproject.toml uv.lock && \
+    uv lock --default-index "$UV_DEFAULT_INDEX" && \
     uv sync --default-index "$UV_DEFAULT_INDEX" --frozen ...
 ```
 
@@ -641,7 +649,7 @@ RUN uv lock --default-index "$UV_DEFAULT_INDEX" && \
 
 最终构建固定为 Python 3.13.15，原锁文件中的 `uvloop 0.21.0` 已有对应 wheel 且受支持，因此不再单独升级 `uvloop`，减少与官方锁文件的版本偏差
 
-第一次重新锁定发生在安装第三方依赖前。后续的 `COPY . .` 会把仓库原始 `uv.lock` 重新复制进镜像，所以第二次安装前也需要再次重新锁定
+第一次重新锁定发生在安装第三方依赖前。后续的 `COPY . .` 会把仓库原始 `pyproject.toml` 和 `uv.lock` 重新复制进镜像，所以第二次安装前也需要再次删除时间过滤配置并重新锁定
 
 这些修改和重新生成的锁文件只存在于 Docker 构建环境，不会修改宿主机仓库中的 `pyproject.toml` 或 `uv.lock`，也不会把内部镜像地址提交到公共仓库
 
