@@ -6,3 +6,4 @@
 
 - [GitHub Copilot API Console：从 Fork 到本地部署](github-copilot-api-console-deployment.md)
 - [LiteLLM：从 Fork 到本地源码部署](litellm-local-source-deployment.md)
+- [Azure Context Cache 与 AI Agent 缓存机制学习笔记](azure-context-cache-and-agent-caching.md)
