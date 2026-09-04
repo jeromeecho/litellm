@@ -13,6 +13,10 @@
 
 文中的产品状态、模型版本、区域、计费和 Private Preview 限制来自资料本身，是 2026 年 8 月附近的资料快照。实际使用前仍需核对最新 Azure 文档和价格页面
 
+本文核对缓存匹配规则时使用的官方资料：
+
+- [Microsoft Learn：Prompt caching with Azure OpenAI in Microsoft Foundry Models](https://learn.microsoft.com/en-us/azure/foundry/openai/how-to/prompt-caching)
+
 ## 2. 先建立一个整体认识
 
 大模型的 Prompt Cache 通常缓存的不是模型最终生成的答案，而是模型处理输入前缀后形成的中间计算结果，也就是常说的 KV cache
@@ -128,11 +132,31 @@
 
 对于 GPT-5.5 及更早模型，缓存按 128 Token 为一个增量。超过完整步长但不足下一个步长的尾数不会进入缓存
 
+Microsoft Learn 明确说明，这个 128 Token 取整规则不适用于 GPT-5.6 及之后的模型。第 4 页仍使用“一个方块代表 128 Token”，只是为了让图中长度可以比较，不代表 GPT-5.6 仍按 128 Token 作为缓存读写粒度
+
 #### 必须从开头匹配
 
 Prompt Cache 是前缀缓存
 
-在尾部追加新消息不会破坏前面的缓存，但修改中间内容后，修改点之后的 Token 都不能继续复用
+在尾部追加新消息不会破坏前面的缓存。修改中间内容后，修改点之后的 Token 都不能继续复用；修改点之前的共同前缀能否复用，还要看它是否达到最低 1024 Token，并符合对应模型的缓存边界规则
+
+第 3 页“change in the middle”示例中，差异点前只有约 3 个方块。按图中一个方块代表 128 Token 计算，共同前缀只有约 384 Token：
+
+```text
+3 × 128 = 384
+384 < 1024
+```
+
+因为它没有达到最低 1024 Token，所以图的下一行才写 `all tokens computed`
+
+这不代表任何中间差异都会导致整个请求重新计算。假设 GPT-5.5 及更早模型的两个请求是：
+
+```text
+已有缓存：前 1536 Token 相同 + A
+新请求：  前 1536 Token 相同 + B
+```
+
+那么前面达到缓存条件的共同前缀仍可命中，差异点后的部分重新计算。只有当第一个差异出现在前 1024 Token 内时，才会出现 `cached_tokens = 0`
 
 ```text
 稳定系统提示词 + 稳定工具定义 + 新用户问题
@@ -212,6 +236,16 @@ Prompt Cache 是前缀缓存
 
 第 5 页的“different tails, the cut differs, no reuse”讲的是 GPT-5.6 新增的 breakpoint 和缓存写入计费机制。在这个机制中，需要关注的不是旧规则下每 128 Token 是否已有缓存块，而是服务在哪些位置创建了可用于读写的缓存断点
 
+Microsoft Learn 对 GPT-5.6 的说明是：
+
+- `implicit` 模式在最新消息上放置一个 breakpoint
+- `explicit` 模式只使用应用指定的 breakpoint
+- breakpoint 包含该内容块及其之前的全部 Prompt
+- breakpoint 之后的内容可以变化，而不会使 breakpoint 之前的缓存失效
+- 用于缓存的 breakpoint 前缀必须至少达到 1024 Token
+
+因此，下面关于 `S + A` 和 `S + B` 的结论有一个严格前提：首次请求只在 `S + A` 末尾产生了隐式 breakpoint，`S` 末尾没有显式 breakpoint，也没有来自更早请求的可读取 breakpoint
+
 先把一次请求拆成两部分：
 
 ```text
@@ -237,7 +271,7 @@ B = 用户 B 的问题和上下文
 [S + B]
 ```
 
-它虽然也以 `S` 开头，但缓存系统之前只在 `S + A` 的末尾建立了隐式断点，没有把 `S` 的末尾单独标记为一个可读取的 breakpoint。用户 B 的请求无法到达已有的 `S + A` 断点，因为比较到 `S` 后，下一段已经从 `A` 变成 `B`
+它虽然也以 `S` 开头，但缓存系统之前只在 `S + A` 的末尾建立了隐式断点，没有把 `S` 的末尾单独标记为一个可读取的 breakpoint。用户 B 的请求无法完整匹配到已有的 `S + A` 断点，因为比较到 `S` 后，下一段已经从 `A` 变成 `B`
 
 结果是用户 B 还要形成另一份缓存：
 
@@ -252,6 +286,10 @@ B = 用户 B 的问题和上下文
 ```
 
 共同的 `S` 没有被单独标记为一个所有用户都可以读取的 breakpoint。这就是第 5 页中“用户 A 和用户 B 共享相同系统提示词，但无法充分共享缓存”的含义
+
+如果 `S` 本身已经对应一个仍有效的显式 breakpoint，或者它曾在更早请求中成为可读取 breakpoint，那么 GPT-5.6 的 `S + B` 仍可以命中 `S`。所以准确表述不是“GPT-5.6 只要尾部不同就一定不能命中”，而是：
+
+> GPT-5.6 只能读取能够完整匹配到某个已有 breakpoint 的前缀。只有 `S + A` 隐式 breakpoint 时，`S + B` 不能读取该断点；要稳定共享 `S`，应在 `S` 后建立显式 breakpoint
 
 #### 多轮会话为什么可以命中
 
