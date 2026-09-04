@@ -234,6 +234,40 @@ Prompt Cache 是前缀缓存
 
 只要 `S` 从开头完全相同、长度超过 1024 Token，并且缓存仍有效，新请求可以命中共同前缀 `S`，差异点后的 `B` 重新计算
 
+这个结论不需要在 `S` 后设置显式 breakpoint。GPT-5.5 及更早模型不支持 `prompt_cache_options` 或 `prompt_cache_breakpoint`，由服务自动按照共同开头匹配缓存
+
+但“命中 `S`”需要按 128 Token 增量精确理解。例如：
+
+```text
+S = 1200 Token
+```
+
+GPT-5.5 及更早模型可命中的最长完整缓存长度是：
+
+```text
+1024 + 1 × 128 = 1152 Token
+```
+
+剩余 48 Token 和后面的 `B` 需要重新计算
+
+如果：
+
+```text
+S = 1536 Token
+```
+
+因为：
+
+```text
+1536 = 1024 + 4 × 128
+```
+
+那么完整的 1536 Token 共同前缀都可以命中，差异点后的 `B` 重新计算
+
+所以更准确的表述是：
+
+> GPT-5.5 及更早模型不需要显式 breakpoint。只要请求开头相同且满足最低长度，服务会自动读取共同前缀中符合 128 Token 增量的最长缓存部分
+
 第 5 页的“different tails, the cut differs, no reuse”讲的是 GPT-5.6 新增的 breakpoint 和缓存写入计费机制。在这个机制中，需要关注的不是旧规则下每 128 Token 是否已有缓存块，而是服务在哪些位置创建了可用于读写的缓存断点
 
 Microsoft Learn 对 GPT-5.6 的说明是：
