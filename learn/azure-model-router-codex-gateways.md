@@ -1,5 +1,13 @@
 # Codex 接入 Azure Model Router：原理、API、计费与网关配置
 
+## 2026-09-10 实测更新
+
+本文主体保留 2026-09-08 的研究背景和候选方案。后续已用本地部署确认：Model Router 在资源级 Responses 返回操作不支持，但通过项目级 `/api/projects/PROJECT/openai/v1/responses` 和现有资源 Key 可以完成原生文本、流式和函数工具调用，经 LiteLLM 的真实 Codex CLI 请求也已成功，不需要 Chat 桥接
+
+GPT-5.6-sol 在资源级和项目级 Responses 都已调用成功，因此两种模型不是必须使用不同 API Base。项目级 Entra 测试曾被当前账号的数据权限拒绝，不代表该接口必须使用 Entra 或不接受资源 Key
+
+最新配置、Codex 自定义模型目录、CLI 菜单切换及 `reasoning.effort=none` 的修复见 [实测配置与排错笔记](codex-litellm-foundry-practice.md)。下文“未验证”的描述属于当时研究阶段，实际验证范围以这篇更新为准，仍不保证所有 Desktop 自动化和长期编码任务兼容
+
 ## 1. 先回答：是不是必须转换 API
 
 **不能直接认定必须转换，也不能认定已经可以无损直连 Codex**
